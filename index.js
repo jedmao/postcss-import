@@ -323,71 +323,78 @@ function readImportedContent(
   hashFiles,
   processor
 ) {
-  // add directory containing the @imported file in the paths
-  // to allow local import from this file
-  var dirname = path.dirname(resolvedFilename)
-  if (options.path.indexOf(dirname) === -1) {
-    options.path = options.path.slice()
-    options.path.unshift(dirname)
-  }
-
-  options.from = resolvedFilename
-  var fileContent = readFile(
-    resolvedFilename,
-    options.encoding,
-    options.transform || function(value) {
-      return value
-    }
-  )
-
-  if (fileContent.trim() === "") {
-    result.warn(resolvedFilename + " is empty", {node: atRule})
-    detach(atRule)
-    return resolvedPromise
-  }
-
-  // skip files wich only contain @import rules
-  var newFileContent = fileContent.replace(/@import (.*);/, "")
-  if (newFileContent.trim() !== "") {
-    var fileContentHash = hash(fileContent)
-
-    // skip files already imported at the same scope and same hash
-    if (hashFiles[fileContentHash] && hashFiles[fileContentHash][media]) {
-      detach(atRule)
-      return resolvedPromise
+  return new Promise(function(resolvePromise) {
+    // add directory containing the @imported file in the paths
+    // to allow local import from this file
+    var dirname = path.dirname(resolvedFilename)
+    if (options.path.indexOf(dirname) === -1) {
+      options.path = options.path.slice()
+      options.path.unshift(dirname)
     }
 
-    // save hash files to skip them next time
-    if (!hashFiles[fileContentHash]) {
-      hashFiles[fileContentHash] = {}
-    }
-    hashFiles[fileContentHash][media] = true
-  }
+    options.from = resolvedFilename
+    readFile(resolvedFilename, options.encoding)
+      .then(function(fileContents) {
 
-  var newStyles = postcss.parse(fileContent, options)
+        if (options.transform) {
+          fileContents = options.transform(fileContents, resolvedFilename)
+        }
 
-  // recursion: import @import from imported file
-  return parseStyles(
-    result,
-    newStyles,
-    options,
-    importedFiles,
-    ignoredAtRules,
-    parsedAtImport.media,
-    hashFiles,
-    processor
-  )
-    .then(function() {
-      return processor.process(newStyles)
-        .then(function(newResult) {
-          newResult.warnings().forEach(function(message) {
-            result.warn(message)
+        if (fileContents.trim() === "") {
+          result.warn(resolvedFilename + " is empty", {node: atRule})
+          detach(atRule)
+          resolvePromise()
+          return
+        }
+
+        // skip files wich only contain @import rules
+        var newFileContents = fileContents.replace(/@import (.*);/, "")
+        if (newFileContents.trim() !== "") {
+          var fileContentsHash = hash(fileContents)
+
+          // skip files already imported at the same scope and same hash
+          var hashFile = hashFiles[fileContentsHash]
+          if (hashFile && hashFile[media]) {
+            detach(atRule)
+            resolvePromise()
+            return
+          }
+
+          // save hash files to skip them next time
+          if (!hashFiles[fileContentsHash]) {
+            hashFiles[fileContentsHash] = {}
+          }
+          hashFiles[fileContentsHash][media] = true
+        }
+
+        var newStyles = postcss.parse(fileContents, options)
+
+        // recursion: import @import from imported file
+        resolvePromise(
+          parseStyles(
+            result,
+            newStyles,
+            options,
+            importedFiles,
+            ignoredAtRules,
+            parsedAtImport.media,
+            hashFiles,
+            processor
+          )
+          .then(function() {
+            return processor.process(newStyles)
+              .then(function(newResult) {
+                newResult.warnings().forEach(function(message) {
+                  result.warn(message)
+                })
+              })
           })
-        })
-    })
-    .then(function() {
-      insertRules(atRule, parsedAtImport, newStyles)
-    })
+          .then(function() {
+            insertRules(atRule, parsedAtImport, newStyles)
+          })
+        )
+      })
+  })
 }
 
 /**
@@ -521,8 +528,19 @@ function resolveFilename(name, root, paths, source, resolver) {
  *
  * @param {String} file
  */
-function readFile(file, encoding, transform) {
-  return transform(fs.readFileSync(file, encoding || "utf8"), file)
+function readFile(file, encoding) {
+  return new Promise(function(resolvePromise, rejectPromise) {
+    fs.readFile(
+      file,
+      {encoding: encoding || "utf8"},
+      function(err, contents) {
+        if (err) {
+          rejectPromise(err)
+        }
+        resolvePromise(contents)
+      }
+    )
+  })
 }
 
 /**
